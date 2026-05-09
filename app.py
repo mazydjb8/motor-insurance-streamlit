@@ -367,11 +367,21 @@ if page == "Executive summary":
     combined_ratio = (total_claims_data + np.sum(fees)) / np.sum(premium)
     risk_premium_emp = total_claims_data / n_policies
 
+    # Monte Carlo risk premium (used to compute the MC-based profit margin,
+    # consistent with the methodology of the written report)
+    agg_loss_es, _ = simulate_aggregate_loss(
+        N_SIM_DEFAULT, best_freq_name, best_freq_params,
+        best_sev_name, best_sev_params, seed=42,
+    )
+    risk_premium_mc = float(agg_loss_es.mean())
+    margin_mc = avg_premium - risk_premium_mc - avg_fees
+    margin_mc_pct = 100 * margin_mc / avg_premium
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Policyholders", f"{n_policies:,}")
     c2.metric("Observed claims", f"{len(claim_severity):,}")
     c3.metric("Combined ratio", f"{combined_ratio:.3f}")
-    c4.metric("Profit margin", f"{(1 - combined_ratio) * 100:.2f}%")
+    c4.metric("Profit margin", f"{margin_mc_pct:.2f}%")
 
     st.markdown("---")
     st.header("Executive summary")
@@ -383,9 +393,9 @@ lowering premiums could be justified.
 
 The portfolio is currently profitable: a combined ratio of **{combined_ratio:.2f}**
 indicates that premium income comfortably covers both claims and operating costs,
-leaving a margin of **{(1 - combined_ratio) * 100:.2f}%**. However, this margin
+leaving a margin of **{margin_mc_pct:.2f}%**. However, this margin
 leaves limited flexibility. Any premium reduction exceeding
-**{(1 - combined_ratio) * 100:.2f}%** would put the company in an unprofitable
+**{margin_mc_pct:.2f}%** would put the company in an unprofitable
 position.
 
 The risk assessment indicates that, under severe scenarios, aggregate losses
@@ -1232,12 +1242,23 @@ elif page == "Conclusion and recommendations":
     avg_fees = float(np.mean(fees))
     total_claims_data = float(claim_severity.sum())
     combined_ratio = (total_claims_data + np.sum(fees)) / np.sum(premium)
-    margin_pct = (1 - combined_ratio) * 100
+
+    # Monte Carlo risk premium for consistency with the methodology
+    # used in the written report
+    agg_loss_concl, _ = simulate_aggregate_loss(
+        N_SIM_DEFAULT, best_freq_name, best_freq_params,
+        best_sev_name, best_sev_params, seed=42,
+    )
+    risk_premium_mc = float(agg_loss_concl.mean())
+    margin_mc = avg_premium - risk_premium_mc - avg_fees
+    margin_pct = 100 * margin_mc / avg_premium
 
     st.header("Tariff what-if simulator")
     st.markdown(
         "The slider below estimates the impact of a hypothetical premium "
-        "reduction on the combined ratio and profit margin."
+        "reduction on the combined ratio and profit margin. The combined "
+        "ratio shown is computed using the Monte Carlo risk premium, "
+        "consistent with the methodology of the written report."
     )
     reduction_pct = st.slider(
         "Premium reduction (%)", 0.0, 20.0, 0.0, step=0.5,
@@ -1245,12 +1266,14 @@ elif page == "Conclusion and recommendations":
 
     new_premium = avg_premium * (1 - reduction_pct / 100)
     new_total_premium = np.sum(premium) * (1 - reduction_pct / 100)
-    new_combined_ratio = (total_claims_data + np.sum(fees)) / new_total_premium
+    # Use MC risk premium scaled to the portfolio for consistency
+    expected_total_claims = risk_premium_mc * n_policies
+    new_combined_ratio = (expected_total_claims + np.sum(fees)) / new_total_premium
 
     c1, c2, c3 = st.columns(3)
     c1.metric("New average premium", f"{new_premium:.2f}",
               delta=f"-{reduction_pct:.1f}%", delta_color="off")
-    c2.metric("New combined ratio", f"{new_combined_ratio:.3f}")
+    c2.metric("New combined ratio (MC)", f"{new_combined_ratio:.3f}")
     c3.metric("New profit margin",
               f"{(1 - new_combined_ratio) * 100:.2f}%")
 
@@ -1279,11 +1302,12 @@ elif page == "Conclusion and recommendations":
         f"""
 **Tariff strategy: maintain the current premium.**
 The portfolio is currently profitable with a combined ratio of
-**{combined_ratio:.3f}** and a margin of **{margin_pct:.2f}%**. Any
-reduction above approximately {margin_pct:.0f}% would push the company
-into a loss-making position. Given the heavy-tailed loss distribution,
-where the TVaR at 99.5% is approximately four times the expected loss,
-a reduction of the tariff is not advised.
+**{combined_ratio:.3f}** and a Monte Carlo profit margin of
+**{margin_pct:.2f}%**. Any reduction above approximately
+{margin_pct:.0f}% would push the company into a loss-making position.
+Given the heavy-tailed loss distribution, where the TVaR at 99.5% is
+approximately four times the expected loss, a reduction of the tariff
+is not advised.
 
 **Reinsurance: implement an Excess-of-Loss treaty.**
 The recommended attachment point is approximately 1,073, corresponding
