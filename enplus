@@ -1,0 +1,9 @@
+from pathlib import Path
+
+file = Path("app.py")
+
+text = file.read_text(encoding="utf-8")
+text = text.replace("—", "-")
+text = text.replace("–", "-")
+
+file.write_text(text, encoding="utf-8")
