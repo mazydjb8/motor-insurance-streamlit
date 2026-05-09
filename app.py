@@ -1,12 +1,12 @@
 """
-Motor Insurance Portfolio Analysis — Interactive Dashboard
+Motor Insurance Portfolio Analysis: Interactive Dashboard
 
 Companion application to the actuarial study of a motor insurance portfolio
 of 1,002 policyholders. Replicates the analysis carried out in R using Python,
 and adds interactive controls for Monte Carlo simulation, solvency capital
 estimation, and reinsurance design.
 
-HEC University of Lausanne — Master's in Actuarial Science
+HEC University of Lausanne, Master's in Actuarial Science
 Course: Simulation Methods in Finance and Insurance
 Authors: Mazy Djezzar, Prescilya Fabi, Samantha López
 """
@@ -246,7 +246,7 @@ def simulate_aggregate_loss(n_sim, freq_model, freq_params, sev_model, sev_param
 
 
 # ============================================================
-# SIDEBAR — DATA SOURCE & NAVIGATION
+# SIDEBAR: DATA SOURCE AND NAVIGATION
 # ============================================================
 st.sidebar.title("Motor Insurance Portfolio")
 st.sidebar.caption("Actuarial Analysis Dashboard")
@@ -331,7 +331,7 @@ st.sidebar.markdown(
 )
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Mazy Djezzar — Prescilya Fabi — Samantha López  \n"
+    "Mazy Djezzar, Prescilya Fabi, Samantha López  \n"
     "HEC University of Lausanne  \n"
     "Master's in Actuarial Science"
 )
@@ -355,7 +355,7 @@ COLOR_NEUTRAL = "#666666"
 if page == "Executive summary":
     st.title("Motor Insurance Portfolio Analysis")
     st.markdown(
-        "**HEC University of Lausanne** — Simulation Methods in Finance and Insurance  \n"
+        "**HEC University of Lausanne**. Simulation Methods in Finance and Insurance.  \n"
         "Master's in Actuarial Science  \n"
         "Authors: Mazy Djezzar, Prescilya Fabi, Samantha López"
     )
@@ -416,16 +416,16 @@ losses, ensuring its long-term financial stability.
         """
 The dashboard mirrors the structure of the written report:
 
-- **Data analysis** — exploration of the raw portfolio data
-- **Frequency model** — selection between Poisson and Negative Binomial
-- **Severity model** — selection between Gamma, Lognormal, and Weibull
-- **Monte Carlo and variance reduction** — convergence assessment and
+- **Data analysis**: exploration of the raw portfolio data
+- **Frequency model**: selection between Poisson and Negative Binomial
+- **Severity model**: selection between Gamma, Lognormal, and Weibull
+- **Monte Carlo and variance reduction**: convergence assessment and
   variance reduction techniques (antithetic and control variates)
-- **Risk premium and Value at Risk** — aggregate loss distribution and
+- **Risk premium and Value at Risk**: aggregate loss distribution and
   Solvency Capital Requirement under Solvency II
-- **Reinsurance** — Excess-of-Loss treaty design with retention slider
-- **Sensitivity analysis** — robustness across model combinations
-- **Conclusion and recommendations** — tariff what-if simulator
+- **Reinsurance**: Excess-of-Loss treaty design with retention slider
+- **Sensitivity analysis**: robustness across model combinations
+- **Conclusion and recommendations**: tariff what-if simulator
         """
     )
 
@@ -748,7 +748,7 @@ elif page == "Severity model":
     fig.update_xaxes(title_text="Theoretical quantiles")
     fig.update_yaxes(title_text="Observed quantiles")
     fig.update_layout(height=400, template=PLOTLY_TEMPLATE,
-                      title="Quantile-quantile plots — claim severity")
+                      title="Quantile-quantile plots, claim severity")
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -808,7 +808,7 @@ elif page == "Monte Carlo and variance reduction":
                       annotation_text="Theoretical mean",
                       annotation_position="bottom right")
         fig.update_layout(
-            title="Convergence — claim frequency",
+            title="Convergence of the running mean (frequency)",
             xaxis_title="Number of simulations", yaxis_title="Running mean",
             template=PLOTLY_TEMPLATE, height=400,
         )
@@ -831,7 +831,7 @@ elif page == "Monte Carlo and variance reduction":
                       annotation_text="Theoretical mean",
                       annotation_position="bottom right")
         fig.update_layout(
-            title="Convergence — claim severity",
+            title="Convergence of the running mean (severity)",
             xaxis_title="Number of simulations",
             yaxis_title="Running mean (claim amount)",
             template=PLOTLY_TEMPLATE, height=400,
@@ -900,8 +900,8 @@ elif page == "Monte Carlo and variance reduction":
     red_sev_av = 100 * (1 - var_av_sev / var_std_sev)
 
     c1, c2 = st.columns(2)
-    c1.metric("Variance reduction — frequency", f"{red_freq_av:.2f}%")
-    c2.metric("Variance reduction — severity", f"{red_sev_av:.2f}%")
+    c1.metric("Variance reduction (frequency)", f"{red_freq_av:.2f}%")
+    c2.metric("Variance reduction (severity)", f"{red_sev_av:.2f}%")
 
     st.header("Variance reduction: control variate (Exponential)")
     st.markdown(
@@ -938,9 +938,9 @@ elif page == "Monte Carlo and variance reduction":
     red_sev_cv = 100 * (1 - var_cv_sev / var_std_sev)
 
     c1, c2 = st.columns(2)
-    c1.metric("Variance reduction — frequency", f"{red_freq_cv:.2f}%",
+    c1.metric("Variance reduction (frequency)", f"{red_freq_cv:.2f}%",
               delta=f"correlation = {corr_freq:.4f}", delta_color="off")
-    c2.metric("Variance reduction — severity", f"{red_sev_cv:.2f}%",
+    c2.metric("Variance reduction (severity)", f"{red_sev_cv:.2f}%",
               delta=f"correlation = {corr_sev:.4f}", delta_color="off")
 
     st.markdown("---")
@@ -1330,6 +1330,6 @@ inflation, seasonality, and macroeconomic effects are not modelled.
 
     st.markdown("---")
     st.caption(
-        "Mazy Djezzar — Prescilya Fabi — Samantha López. "
+        "Mazy Djezzar, Prescilya Fabi, Samantha López. "
         "HEC University of Lausanne, Master's in Actuarial Science."
     )
