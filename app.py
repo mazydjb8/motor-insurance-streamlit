@@ -84,17 +84,6 @@ def load_data_from_file(uploaded_file) -> pd.DataFrame:
     raise ValueError("Could not parse the CSV file.")
 
 
-@st.cache_data(show_spinner="Loading data...")
-def load_default_data() -> pd.DataFrame:
-    df = pd.read_csv(
-        "data/DATA_SET_2.csv",
-        sep=";", encoding="utf-8-sig",
-        na_values=[" -   ", "-", "NA", "", " "],
-    )
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-
 def clean_data(df: pd.DataFrame):
     claim_count = df["CLM_FREQ"].astype(int).values
     amt_cols = [c for c in df.columns if c.startswith("CLM_AMT")]
@@ -264,37 +253,43 @@ st.sidebar.caption("Actuarial Analysis Dashboard")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Data source")
-data_source = st.sidebar.radio(
-    "Data source selection",
-    ["Bundled CSV (default)", "Google Sheets URL", "Upload CSV"],
-    index=0,
-    label_visibility="collapsed",
+st.sidebar.caption(
+    "Data is loaded from the project's Google Sheets by default. "
+    "An alternative CSV file can be uploaded below."
+)
+
+uploaded = st.sidebar.file_uploader(
+    "Upload an alternative CSV (optional)",
+    type=["csv"],
+    help="If no file is uploaded, the project's Google Sheets is used.",
 )
 
 df = None
 load_error = None
+data_source_label = None
 
 try:
-    if data_source == "Bundled CSV (default)":
-        df = load_default_data()
-    elif data_source == "Google Sheets URL":
-        url = st.sidebar.text_input("Google Sheets CSV URL", value=GSHEET_CSV_URL)
-        st.sidebar.caption("The sheet must be shared as 'Anyone with the link'.")
-        if url:
-            df = load_data_from_url(url)
+    if uploaded is not None:
+        df = load_data_from_file(uploaded)
+        data_source_label = f"Uploaded file: {uploaded.name}"
     else:
-        uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
-        if uploaded is not None:
-            df = load_data_from_file(uploaded)
+        df = load_data_from_url(GSHEET_CSV_URL)
+        data_source_label = "Project Google Sheets"
 except Exception as e:
     load_error = str(e)
 
 if df is None:
     if load_error:
-        st.error(f"Failed to load data: {load_error}")
+        st.error(
+            f"Failed to load data from Google Sheets: {load_error}\n\n"
+            "If the issue persists, the spreadsheet may not be publicly shared. "
+            "You can upload a CSV file from the sidebar as an alternative."
+        )
     else:
-        st.info("Please select or upload a data source from the sidebar.")
+        st.info("Loading data...")
     st.stop()
+
+st.sidebar.success(f"Loaded from: {data_source_label}")
 
 claim_count, claim_severity, n_removed, amt_cols = clean_data(df.copy())
 n_policies = len(df)
