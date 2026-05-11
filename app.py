@@ -55,6 +55,7 @@ st.markdown(
 # DATA LOADING
 # ============================================================
 GSHEET_ID = "1FmcbyY42xezqifz1xMic33zDGUZKcR1r6koeDlWSD1I"
+
 GSHEET_CSV_URL = (
     f"https://docs.google.com/spreadsheets/d/{GSHEET_ID}/gviz/tq?tqx=out:csv&sheet=data"
 )
