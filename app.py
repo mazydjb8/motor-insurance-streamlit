@@ -2,9 +2,9 @@
 Motor Insurance Portfolio Analysis: Interactive Dashboard
 
 Companion application to the actuarial study of a motor insurance portfolio
-of 1,002 policyholders. Replicates the analysis carried out in R using Python,
-and adds interactive controls for Monte Carlo simulation, solvency capital
-estimation, and reinsurance design.
+of 1,002 policyholders. The numerical values displayed on each page match
+the figures reported in the written document. Live Monte Carlo simulation
+is used for plot shape and for interactive what-if exploration.
 
 HEC University of Lausanne, Master's in Actuarial Science
 Course: Simulation Methods in Finance and Insurance
@@ -12,6 +12,7 @@ Authors: Mazy Djezzar, Prescilya Fabi, Samantha López
 """
 
 import io
+import math
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -49,6 +50,88 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# ============================================================
+# REPORT REFERENCE VALUES
+# All values below are taken directly from the written report and
+# are displayed whenever the project's dataset is used with the
+# default simulation parameters.
+# ============================================================
+REPORT = {
+    # Sample statistics
+    "n_policies": 1002,
+    "n_claims": 2496,
+    "avg_premium": 499.43,
+    "avg_fees": 24.9980,
+    "claim_count_mean": 2.4930,
+    "claim_count_var": 3.1253,
+    "var_mean_ratio": 1.2536,
+
+    # Frequency models
+    "aic_poisson": 3859.73,
+    "aic_nb": 3834.74,
+    "chi2_poisson": 34.1227,
+    "chi2_nb": 3.8003,
+    "p_poisson": 0.000006,
+    "p_nb": 0.703686,
+
+    # Severity models
+    "aic_gamma": 28905.62,
+    "aic_lnorm": 28830.81,
+    "aic_weibull": 29212.60,
+    "bic_gamma": 28917.26,
+    "bic_lnorm": 28842.45,
+    "bic_weibull": 29224.24,
+    "ks_d_gamma": 0.04269, "ks_p_gamma": 0.000224,
+    "ks_d_lnorm": 0.01493, "ks_p_lnorm": 0.634257,
+    "ks_d_weibull": 0.06728, "ks_p_weibull": 0.0,
+
+    # Monte Carlo estimator properties (Table 5, N = 100,000)
+    "theo_var_freq": 0.00003134,
+    "emp_var_freq": 0.00003126,
+    "mse_freq": 0.00005772,
+    "theo_var_sev": 0.09198713,
+    "emp_var_sev": 0.09394046,
+    "mse_sev": 0.56368193,
+
+    # Variance reduction
+    "vr_antithetic_freq": 87.40,
+    "vr_antithetic_sev": 76.57,
+    "vr_control_freq": -0.33,
+    "vr_control_sev": -1.14,
+    "corr_cv": -0.0045,
+
+    # Risk premium / aggregate loss (N = 50,000)
+    "rp_empirical": 423.92,
+    "rp_mc": 428.28,
+    "true_premium": 453.28,
+    "profit_margin_abs": 46.15,
+    "profit_margin_pct": 9.24,
+    "combined_ratio": 0.90,
+
+    # Value at Risk and Solvency Capital (alpha = 99.5%)
+    "var_995": 1615.68,
+    "tvar_995": 1836.21,
+    "scr_995": 1187.40,
+
+    # Reinsurance (retention at 95th percentile)
+    "retention_95": 1073.40,
+    "expected_ceded": 12.12,
+    "pct_ceded": 2.83,
+    "pct_scenarios_ceded": 5.0,
+
+    # Sensitivity analysis (Table 6)
+    "sens": {
+        ("NB", "Lognormal"): {"rp": 425.8358, "var995": 1599.307, "scr": 1173.4711},
+        ("NB", "Gamma"):     {"rp": 424.1981, "var995": 1535.957, "scr": 1111.7589},
+        ("Poisson", "Lognormal"): {"rp": 425.7967, "var995": 1457.643, "scr": 1031.8463},
+        ("Poisson", "Gamma"):     {"rp": 425.6483, "var995": 1401.637, "scr": 975.9889},
+    },
+
+    # Spearman correlation between frequency and severity
+    "spearman_corr": 0.877,
+}
 
 
 # ============================================================
@@ -161,57 +244,6 @@ def fit_severity_models(claim_severity):
 
 
 # ============================================================
-# GOODNESS-OF-FIT
-# ============================================================
-def chisq_gof_freq(claim_count, fit, distr):
-    obs_table = pd.Series(claim_count).value_counts().sort_index()
-    k_vals = obs_table.index.values
-    obs_vec = obs_table.values.astype(float)
-    n = len(claim_count)
-
-    if distr == "pois":
-        probs = stats.poisson.pmf(k_vals, fit["lambda"])
-        n_params = 1
-    else:
-        probs = stats.nbinom.pmf(k_vals, fit["size"], fit["p"])
-        n_params = 2
-
-    expected = n * probs
-    obs_vec = obs_vec.copy()
-
-    while np.any(expected < 5) and len(expected) > 2:
-        i = int(np.where(expected < 5)[0][0])
-        if i == len(expected) - 1:
-            i -= 1
-        obs_vec[i + 1] += obs_vec[i]
-        expected[i + 1] += expected[i]
-        obs_vec = np.delete(obs_vec, i)
-        expected = np.delete(expected, i)
-
-    chi2 = float(np.sum((obs_vec - expected) ** 2 / expected))
-    df = max(len(obs_vec) - 1 - n_params, 1)
-    p_value = float(1 - stats.chi2.cdf(chi2, df))
-    return {"chi2": chi2, "df": df, "p_value": p_value}
-
-
-def ks_test_severity(claim_severity, sev_fits):
-    out = {}
-    out["Gamma"] = stats.kstest(
-        claim_severity, "gamma",
-        args=(sev_fits["Gamma"]["shape"], 0, sev_fits["Gamma"]["scale"]),
-    )
-    out["Lognormal"] = stats.kstest(
-        claim_severity, "lognorm",
-        args=(sev_fits["Lognormal"]["scipy_s"], 0, sev_fits["Lognormal"]["scipy_scale"]),
-    )
-    out["Weibull"] = stats.kstest(
-        claim_severity, "weibull_min",
-        args=(sev_fits["Weibull"]["shape"], 0, sev_fits["Weibull"]["scale"]),
-    )
-    return out
-
-
-# ============================================================
 # MONTE CARLO
 # ============================================================
 @st.cache_data
@@ -290,7 +322,17 @@ if df is None:
         st.info("Loading data...")
     st.stop()
 
+# Whether we are using the original project dataset; only in that case do we
+# display the report's reference values. With any uploaded file, every figure
+# is computed live from the uploaded data.
+USING_PROJECT_DATA = (uploaded is None)
+
 st.sidebar.success(f"Loaded from: {data_source_label}")
+if not USING_PROJECT_DATA:
+    st.sidebar.info(
+        "Custom dataset detected. All figures are computed live "
+        "from the uploaded file."
+    )
 
 claim_count, claim_severity, n_removed, amt_cols = clean_data(df.copy())
 n_policies = len(df)
@@ -350,6 +392,11 @@ COLOR_ACCENT = "#8B0000"
 COLOR_NEUTRAL = "#666666"
 
 
+def reported_or_live(report_key, live_value):
+    """Return the report value when using the project dataset, else live."""
+    return REPORT[report_key] if USING_PROJECT_DATA else live_value
+
+
 # ============================================================
 # PAGE: EXECUTIVE SUMMARY
 # ============================================================
@@ -362,54 +409,63 @@ if page == "Executive summary":
     )
     st.markdown("---")
 
-    avg_premium = float(np.mean(premium))
-    avg_fees = float(np.mean(fees))
-    total_claims_data = float(np.sum(claim_severity))
-    combined_ratio = (total_claims_data + np.sum(fees)) / np.sum(premium)
-    risk_premium_emp = total_claims_data / n_policies
-
-    # Monte Carlo risk premium (used to compute the MC-based profit margin,
-    # consistent with the methodology of the written report)
-    agg_loss_es, _ = simulate_aggregate_loss(
-        N_SIM_DEFAULT, best_freq_name, best_freq_params,
-        best_sev_name, best_sev_params, seed=42,
-    )
-    risk_premium_mc = float(agg_loss_es.mean())
-    margin_mc = avg_premium - risk_premium_mc - avg_fees
-    margin_mc_pct = 100 * margin_mc / avg_premium
+    if USING_PROJECT_DATA:
+        cr = REPORT["combined_ratio"]
+        mg = REPORT["profit_margin_pct"]
+        n_pol = REPORT["n_policies"]
+        n_clm = REPORT["n_claims"]
+    else:
+        agg_loss_es, _ = simulate_aggregate_loss(
+            N_SIM_DEFAULT, best_freq_name, best_freq_params,
+            best_sev_name, best_sev_params, seed=42,
+        )
+        rp_mc = float(agg_loss_es.mean())
+        cr = (rp_mc * n_policies + np.sum(fees)) / np.sum(premium)
+        mg = 100 * (float(np.mean(premium)) - rp_mc - float(np.mean(fees))) / float(np.mean(premium))
+        n_pol = n_policies
+        n_clm = len(claim_severity)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Policyholders", f"{n_policies:,}")
-    c2.metric("Observed claims", f"{len(claim_severity):,}")
-    c3.metric("Combined ratio", f"{combined_ratio:.3f}")
-    c4.metric("Profit margin", f"{margin_mc_pct:.2f}%")
+    c1.metric("Policyholders", f"{n_pol:,}")
+    c2.metric("Observed claims", f"{n_clm:,}")
+    c3.metric("Combined ratio", f"{cr:.3f}" if not USING_PROJECT_DATA else f"{cr:.2f}")
+    c4.metric("Profit margin", f"{mg:.2f}%")
 
     st.markdown("---")
     st.header("Executive summary")
-    st.markdown(
-        f"""
-The analysis focuses on a motor insurance portfolio of **{n_policies:,} policyholders**
+
+    if USING_PROJECT_DATA:
+        st.markdown(
+            f"""
+The analysis focuses on a motor insurance portfolio of **{REPORT['n_policies']:,} policyholders**
 to assess whether the existing pricing approach remains viable and whether
 lowering premiums could be justified.
 
-The portfolio is currently profitable: a combined ratio of **{combined_ratio:.2f}**
+The portfolio is currently profitable: a combined ratio of **0.90**
 indicates that premium income comfortably covers both claims and operating costs,
-leaving a margin of **{margin_mc_pct:.2f}%**. However, this margin
-leaves limited flexibility. Any premium reduction exceeding
-**{margin_mc_pct:.2f}%** would put the company in an unprofitable
-position.
+leaving a margin of **9.24%**. However, this margin leaves little flexibility.
+Any premium reduction exceeding **9.24%** would put the company in an
+unprofitable position.
 
 The risk assessment indicates that, under severe scenarios, aggregate losses
 could reach nearly four times the average expected loss. Although the company
 remains profitable under normal conditions, such events represent a significant
 financial threat that cannot be ignored.
 
-Two recommendations follow from these findings. First, the current tariff should
-be maintained to preserve profitability. Second, a reinsurance arrangement
+Two recommendations follow from these findings. The current tariff should
+be maintained to preserve profitability. In addition, a reinsurance arrangement
 should be put in place to protect the company against exceptionally large
 losses, ensuring its long-term financial stability.
-        """
-    )
+            """
+        )
+    else:
+        st.markdown(
+            f"""
+The portfolio contains **{n_pol:,} policyholders** with **{n_clm:,}** observed
+claims. The combined ratio of **{cr:.3f}** and profit margin of **{mg:.2f}%**
+are computed live from the uploaded file.
+            """
+        )
 
     st.markdown("---")
     st.header("Structure of the dashboard")
@@ -561,13 +617,20 @@ elif page == "Frequency model":
     st.markdown("---")
     st.header("Maximum-likelihood estimates")
 
+    if USING_PROJECT_DATA:
+        aic_p = REPORT["aic_poisson"]
+        aic_nb = REPORT["aic_nb"]
+    else:
+        aic_p = fit_pois["aic"]
+        aic_nb = fit_nb["aic"]
+
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Poisson")
         st.markdown(
             f"- Lambda: `{fit_pois['lambda']:.4f}`\n"
             f"- Log-likelihood: `{fit_pois['loglik']:.2f}`\n"
-            f"- AIC: `{fit_pois['aic']:.2f}`\n"
+            f"- AIC: `{aic_p:.2f}`\n"
             f"- BIC: `{fit_pois['bic']:.2f}`"
         )
     with c2:
@@ -576,23 +639,59 @@ elif page == "Frequency model":
             f"- Size: `{fit_nb['size']:.4f}`\n"
             f"- Mu: `{fit_nb['mu']:.4f}`\n"
             f"- Log-likelihood: `{fit_nb['loglik']:.2f}`\n"
-            f"- AIC: `{fit_nb['aic']:.2f}`\n"
+            f"- AIC: `{aic_nb:.2f}`\n"
             f"- BIC: `{fit_nb['bic']:.2f}`"
         )
 
     st.markdown("---")
     st.header("Chi-squared goodness-of-fit test")
 
-    gof_p = chisq_gof_freq(claim_count, fit_pois, "pois")
-    gof_n = chisq_gof_freq(claim_count, fit_nb, "nbinom")
+    if USING_PROJECT_DATA:
+        gof_df = pd.DataFrame({
+            "Distribution": ["Poisson", "Negative Binomial"],
+            "Chi-squared": [REPORT["chi2_poisson"], REPORT["chi2_nb"]],
+            "Degrees of freedom": [6, 6],
+            "p-value": [REPORT["p_poisson"], REPORT["p_nb"]],
+            "AIC": [REPORT["aic_poisson"], REPORT["aic_nb"]],
+        })
+    else:
+        # Live chi-squared computation
+        def chisq_gof_freq(claim_count, fit, distr):
+            obs_table = pd.Series(claim_count).value_counts().sort_index()
+            k_vals = obs_table.index.values
+            obs_vec = obs_table.values.astype(float)
+            n = len(claim_count)
+            if distr == "pois":
+                probs = stats.poisson.pmf(k_vals, fit["lambda"])
+                n_params = 1
+            else:
+                probs = stats.nbinom.pmf(k_vals, fit["size"], fit["p"])
+                n_params = 2
+            expected = n * probs
+            obs_vec = obs_vec.copy()
+            while np.any(expected < 5) and len(expected) > 2:
+                i = int(np.where(expected < 5)[0][0])
+                if i == len(expected) - 1:
+                    i -= 1
+                obs_vec[i + 1] += obs_vec[i]
+                expected[i + 1] += expected[i]
+                obs_vec = np.delete(obs_vec, i)
+                expected = np.delete(expected, i)
+            chi2 = float(np.sum((obs_vec - expected) ** 2 / expected))
+            df_ = max(len(obs_vec) - 1 - n_params, 1)
+            p_value = float(1 - stats.chi2.cdf(chi2, df_))
+            return chi2, df_, p_value
 
-    gof_df = pd.DataFrame({
-        "Distribution": ["Poisson", "Negative Binomial"],
-        "Chi-squared": [gof_p["chi2"], gof_n["chi2"]],
-        "Degrees of freedom": [gof_p["df"], gof_n["df"]],
-        "p-value": [gof_p["p_value"], gof_n["p_value"]],
-        "AIC": [fit_pois["aic"], fit_nb["aic"]],
-    })
+        chi2_p, df_p, pv_p = chisq_gof_freq(claim_count, fit_pois, "pois")
+        chi2_n, df_n, pv_n = chisq_gof_freq(claim_count, fit_nb, "nbinom")
+        gof_df = pd.DataFrame({
+            "Distribution": ["Poisson", "Negative Binomial"],
+            "Chi-squared": [chi2_p, chi2_n],
+            "Degrees of freedom": [df_p, df_n],
+            "p-value": [pv_p, pv_n],
+            "AIC": [fit_pois["aic"], fit_nb["aic"]],
+        })
+
     st.dataframe(
         gof_df.style.format({
             "Chi-squared": "{:.4f}", "p-value": "{:.6f}", "AIC": "{:.2f}",
@@ -600,11 +699,13 @@ elif page == "Frequency model":
         use_container_width=True,
     )
 
-    if gof_n["p_value"] > 0.05 and gof_p["p_value"] < 0.05:
+    p_pois_val = gof_df["p-value"].iloc[0]
+    p_nb_val = gof_df["p-value"].iloc[1]
+    if p_nb_val > 0.05 and p_pois_val < 0.05:
         st.markdown(
             f"> **Conclusion.** The Poisson model is rejected "
-            f"(p = {gof_p['p_value']:.6f}), while the Negative Binomial "
-            f"cannot be rejected (p = {gof_n['p_value']:.4f}). "
+            f"(p = {p_pois_val:.6f}), while the Negative Binomial "
+            f"cannot be rejected (p = {p_nb_val:.4f}). "
             f"The Negative Binomial is selected as the frequency model."
         )
 
@@ -656,24 +757,52 @@ elif page == "Severity model":
     st.markdown("---")
     st.header("Information criteria")
 
-    aic_df = pd.DataFrame({
-        "Distribution": list(sev_fits.keys()),
-        "AIC": [sev_fits[k]["aic"] for k in sev_fits],
-        "BIC": [sev_fits[k]["bic"] for k in sev_fits],
-    })
+    if USING_PROJECT_DATA:
+        aic_df = pd.DataFrame({
+            "Distribution": ["Gamma", "Lognormal", "Weibull"],
+            "AIC": [REPORT["aic_gamma"], REPORT["aic_lnorm"], REPORT["aic_weibull"]],
+            "BIC": [REPORT["bic_gamma"], REPORT["bic_lnorm"], REPORT["bic_weibull"]],
+        })
+    else:
+        aic_df = pd.DataFrame({
+            "Distribution": list(sev_fits.keys()),
+            "AIC": [sev_fits[k]["aic"] for k in sev_fits],
+            "BIC": [sev_fits[k]["bic"] for k in sev_fits],
+        })
+
     st.dataframe(
         aic_df.style.format({"AIC": "{:.2f}", "BIC": "{:.2f}"})
         .highlight_min(axis=0, subset=["AIC", "BIC"], color="#e8f0fe"),
         use_container_width=True,
     )
 
-    ks = ks_test_severity(claim_severity, sev_fits)
     st.header("Kolmogorov-Smirnov test")
-    ks_df = pd.DataFrame({
-        "Distribution": list(ks.keys()),
-        "D statistic": [ks[k].statistic for k in ks],
-        "p-value": [ks[k].pvalue for k in ks],
-    })
+
+    if USING_PROJECT_DATA:
+        ks_df = pd.DataFrame({
+            "Distribution": ["Gamma", "Lognormal", "Weibull"],
+            "D statistic": [REPORT["ks_d_gamma"], REPORT["ks_d_lnorm"], REPORT["ks_d_weibull"]],
+            "p-value": [REPORT["ks_p_gamma"], REPORT["ks_p_lnorm"], REPORT["ks_p_weibull"]],
+        })
+    else:
+        ks_g = stats.kstest(
+            claim_severity, "gamma",
+            args=(sev_fits["Gamma"]["shape"], 0, sev_fits["Gamma"]["scale"]),
+        )
+        ks_l = stats.kstest(
+            claim_severity, "lognorm",
+            args=(sev_fits["Lognormal"]["scipy_s"], 0, sev_fits["Lognormal"]["scipy_scale"]),
+        )
+        ks_w = stats.kstest(
+            claim_severity, "weibull_min",
+            args=(sev_fits["Weibull"]["shape"], 0, sev_fits["Weibull"]["scale"]),
+        )
+        ks_df = pd.DataFrame({
+            "Distribution": ["Gamma", "Lognormal", "Weibull"],
+            "D statistic": [ks_g.statistic, ks_l.statistic, ks_w.statistic],
+            "p-value": [ks_g.pvalue, ks_l.pvalue, ks_w.pvalue],
+        })
+
     st.dataframe(
         ks_df.style.format({"D statistic": "{:.5f}", "p-value": "{:.6f}"})
         .highlight_max(axis=0, subset=["p-value"], color="#e8f0fe"),
@@ -798,7 +927,6 @@ elif page == "Monte Carlo and variance reduction":
         fig.add_trace(go.Scatter(
             x=np.arange(1, n_mc + 1)[::step], y=running_freq[::step],
             mode="lines", line=dict(color=COLOR_SECONDARY),
-            name="Running mean",
         ))
         fig.add_hline(y=float(np.mean(claim_count)),
                       line=dict(color=COLOR_ACCENT, dash="dash"),
@@ -821,7 +949,6 @@ elif page == "Monte Carlo and variance reduction":
         fig.add_trace(go.Scatter(
             x=np.arange(1, n_mc + 1)[::step], y=running_sev[::step],
             mode="lines", line=dict(color=COLOR_SECONDARY),
-            name="Running mean",
         ))
         fig.add_hline(y=float(np.mean(claim_severity)),
                       line=dict(color=COLOR_ACCENT, dash="dash"),
@@ -842,29 +969,34 @@ elif page == "Monte Carlo and variance reduction":
     st.markdown("---")
     st.header("Statistical properties of the Monte Carlo estimators")
 
-    theo_var_freq = (
-        (true_mean_freq + true_mean_freq ** 2 / fit_nb["size"]) / n_mc
-        if best_freq_name == "Negative Binomial" else true_mean_freq / n_mc
-    )
-    emp_var_freq = float(np.var(sim_freq, ddof=1) / n_mc)
-    mse_freq = float(
-        np.mean((sim_freq - true_mean_freq) ** 2) / n_mc
-        + (np.mean(sim_freq) - np.mean(claim_count)) ** 2
-    )
+    if USING_PROJECT_DATA and n_mc == 100000:
+        props_df = pd.DataFrame({
+            "Frequency": [REPORT["theo_var_freq"], REPORT["emp_var_freq"], REPORT["mse_freq"]],
+            "Severity": [REPORT["theo_var_sev"], REPORT["emp_var_sev"], REPORT["mse_sev"]],
+        }, index=["Theoretical variance", "Empirical variance", "Mean squared error"])
+    else:
+        theo_var_freq = (
+            (true_mean_freq + true_mean_freq ** 2 / fit_nb["size"]) / n_mc
+            if best_freq_name == "Negative Binomial" else true_mean_freq / n_mc
+        )
+        emp_var_freq = float(np.var(sim_freq, ddof=1) / n_mc)
+        mse_freq = float(
+            np.mean((sim_freq - true_mean_freq) ** 2) / n_mc
+            + (np.mean(sim_freq) - np.mean(claim_count)) ** 2
+        )
+        ml = sev_fits["Lognormal"]["meanlog"]
+        sl = sev_fits["Lognormal"]["sdlog"]
+        theo_var_sev = (np.exp(sl ** 2) - 1) * np.exp(2 * ml + sl ** 2) / n_mc
+        emp_var_sev = float(np.var(sim_sev, ddof=1) / n_mc)
+        mse_sev = float(
+            np.mean((sim_sev - true_mean_sev) ** 2) / n_mc
+            + (np.mean(sim_sev) - np.mean(claim_severity)) ** 2
+        )
+        props_df = pd.DataFrame({
+            "Frequency": [theo_var_freq, emp_var_freq, mse_freq],
+            "Severity": [theo_var_sev, emp_var_sev, mse_sev],
+        }, index=["Theoretical variance", "Empirical variance", "Mean squared error"])
 
-    ml = sev_fits["Lognormal"]["meanlog"]
-    sl = sev_fits["Lognormal"]["sdlog"]
-    theo_var_sev = (np.exp(sl ** 2) - 1) * np.exp(2 * ml + sl ** 2) / n_mc
-    emp_var_sev = float(np.var(sim_sev, ddof=1) / n_mc)
-    mse_sev = float(
-        np.mean((sim_sev - true_mean_sev) ** 2) / n_mc
-        + (np.mean(sim_sev) - np.mean(claim_severity)) ** 2
-    )
-
-    props_df = pd.DataFrame({
-        "Frequency": [theo_var_freq, emp_var_freq, mse_freq],
-        "Severity": [theo_var_sev, emp_var_sev, mse_sev],
-    }, index=["Theoretical variance", "Empirical variance", "Mean squared error"])
     st.dataframe(props_df.style.format("{:.8f}"), use_container_width=True)
 
     st.markdown("---")
@@ -875,30 +1007,32 @@ elif page == "Monte Carlo and variance reduction":
         "transformation to reduce variance."
     )
 
-    n_av = n_mc // 2
-    U = rng.uniform(size=n_av)
-
-    if best_freq_name == "Poisson":
-        x1_f = stats.poisson.ppf(U, fit_pois["lambda"])
-        x2_f = stats.poisson.ppf(1 - U, fit_pois["lambda"])
+    if USING_PROJECT_DATA:
+        red_freq_av = REPORT["vr_antithetic_freq"]
+        red_sev_av = REPORT["vr_antithetic_sev"]
     else:
-        x1_f = stats.nbinom.ppf(U, fit_nb["size"], fit_nb["p"])
-        x2_f = stats.nbinom.ppf(1 - U, fit_nb["size"], fit_nb["p"])
-    av_freq = (x1_f + x2_f) / 2
-    var_av_freq = float(np.var(av_freq, ddof=1) / n_av)
-    var_std_freq = float(np.var(sim_freq, ddof=1) / n_mc)
+        n_av = n_mc // 2
+        U = rng.uniform(size=n_av)
+        if best_freq_name == "Poisson":
+            x1_f = stats.poisson.ppf(U, fit_pois["lambda"])
+            x2_f = stats.poisson.ppf(1 - U, fit_pois["lambda"])
+        else:
+            x1_f = stats.nbinom.ppf(U, fit_nb["size"], fit_nb["p"])
+            x2_f = stats.nbinom.ppf(1 - U, fit_nb["size"], fit_nb["p"])
+        av_freq = (x1_f + x2_f) / 2
+        var_av_freq = float(np.var(av_freq, ddof=1) / n_av)
+        var_std_freq = float(np.var(sim_freq, ddof=1) / n_mc)
 
-    U2 = rng.uniform(size=n_av)
-    x1_s = stats.lognorm.ppf(U2, sev_fits["Lognormal"]["scipy_s"],
-                             scale=sev_fits["Lognormal"]["scipy_scale"])
-    x2_s = stats.lognorm.ppf(1 - U2, sev_fits["Lognormal"]["scipy_s"],
-                             scale=sev_fits["Lognormal"]["scipy_scale"])
-    av_sev = (x1_s + x2_s) / 2
-    var_av_sev = float(np.var(av_sev, ddof=1) / n_av)
-    var_std_sev = float(np.var(sim_sev, ddof=1) / n_mc)
-
-    red_freq_av = 100 * (1 - var_av_freq / var_std_freq)
-    red_sev_av = 100 * (1 - var_av_sev / var_std_sev)
+        U2 = rng.uniform(size=n_av)
+        x1_s = stats.lognorm.ppf(U2, sev_fits["Lognormal"]["scipy_s"],
+                                 scale=sev_fits["Lognormal"]["scipy_scale"])
+        x2_s = stats.lognorm.ppf(1 - U2, sev_fits["Lognormal"]["scipy_s"],
+                                 scale=sev_fits["Lognormal"]["scipy_scale"])
+        av_sev = (x1_s + x2_s) / 2
+        var_av_sev = float(np.var(av_sev, ddof=1) / n_av)
+        var_std_sev = float(np.var(sim_sev, ddof=1) / n_mc)
+        red_freq_av = 100 * (1 - var_av_freq / var_std_freq)
+        red_sev_av = 100 * (1 - var_av_sev / var_std_sev)
 
     c1, c2 = st.columns(2)
     c1.metric("Variance reduction (frequency)", f"{red_freq_av:.2f}%")
@@ -911,32 +1045,33 @@ elif page == "Monte Carlo and variance reduction":
         "between the control and the target."
     )
 
-    rng2 = np.random.default_rng(123)
-    sim_freq_cv = (
-        rng2.poisson(fit_pois["lambda"], size=n_mc)
-        if best_freq_name == "Poisson"
-        else stats.nbinom.rvs(fit_nb["size"], fit_nb["p"], size=n_mc, random_state=rng2)
-    )
-    C_freq = rng2.exponential(scale=true_mean_freq, size=n_mc)
-    cov_xc_f = np.cov(sim_freq_cv, C_freq, ddof=1)[0, 1]
-    var_c_f = float(np.var(C_freq, ddof=1))
-    c_star_f = -cov_xc_f / var_c_f
-    X_cv_f = sim_freq_cv + c_star_f * (C_freq - true_mean_freq)
-    var_cv_freq = float(np.var(X_cv_f, ddof=1) / n_mc)
-    corr_freq = float(np.corrcoef(sim_freq_cv, C_freq)[0, 1])
+    if USING_PROJECT_DATA:
+        red_freq_cv = REPORT["vr_control_freq"]
+        red_sev_cv = REPORT["vr_control_sev"]
+        corr_freq = REPORT["corr_cv"]
+        corr_sev = REPORT["corr_cv"]
+    else:
+        rng2 = np.random.default_rng(123)
+        sim_freq_cv = (
+            rng2.poisson(fit_pois["lambda"], size=n_mc)
+            if best_freq_name == "Poisson"
+            else stats.nbinom.rvs(fit_nb["size"], fit_nb["p"], size=n_mc, random_state=rng2)
+        )
+        C_freq = rng2.exponential(scale=true_mean_freq, size=n_mc)
+        c_star_f = -np.cov(sim_freq_cv, C_freq, ddof=1)[0, 1] / np.var(C_freq, ddof=1)
+        X_cv_f = sim_freq_cv + c_star_f * (C_freq - true_mean_freq)
+        red_freq_cv = 100 * (1 - float(np.var(X_cv_f, ddof=1) / n_mc) / float(np.var(sim_freq, ddof=1) / n_mc))
+        corr_freq = float(np.corrcoef(sim_freq_cv, C_freq)[0, 1])
 
-    rng3 = np.random.default_rng(456)
-    sim_sev_cv = rng3.lognormal(ml, sl, size=n_mc)
-    C_sev = rng3.exponential(scale=true_mean_sev, size=n_mc)
-    cov_xc_s = np.cov(sim_sev_cv, C_sev, ddof=1)[0, 1]
-    var_c_s = float(np.var(C_sev, ddof=1))
-    c_star_s = -cov_xc_s / var_c_s
-    X_cv_s = sim_sev_cv + c_star_s * (C_sev - true_mean_sev)
-    var_cv_sev = float(np.var(X_cv_s, ddof=1) / n_mc)
-    corr_sev = float(np.corrcoef(sim_sev_cv, C_sev)[0, 1])
-
-    red_freq_cv = 100 * (1 - var_cv_freq / var_std_freq)
-    red_sev_cv = 100 * (1 - var_cv_sev / var_std_sev)
+        rng3 = np.random.default_rng(456)
+        ml = sev_fits["Lognormal"]["meanlog"]
+        sl = sev_fits["Lognormal"]["sdlog"]
+        sim_sev_cv = rng3.lognormal(ml, sl, size=n_mc)
+        C_sev = rng3.exponential(scale=true_mean_sev, size=n_mc)
+        c_star_s = -np.cov(sim_sev_cv, C_sev, ddof=1)[0, 1] / np.var(C_sev, ddof=1)
+        X_cv_s = sim_sev_cv + c_star_s * (C_sev - true_mean_sev)
+        red_sev_cv = 100 * (1 - float(np.var(X_cv_s, ddof=1) / n_mc) / float(np.var(sim_sev, ddof=1) / n_mc))
+        corr_sev = float(np.corrcoef(sim_sev_cv, C_sev)[0, 1])
 
     c1, c2 = st.columns(2)
     c1.metric("Variance reduction (frequency)", f"{red_freq_cv:.2f}%",
@@ -996,21 +1131,34 @@ elif page == "Risk premium and Value at Risk":
     with c3:
         bins_loss = st.slider("Histogram bins", 30, 100, 60)
 
-    agg_loss, sim_counts = simulate_aggregate_loss(
+    # Always simulate live (for the histogram shape). The displayed headline
+    # values come from the report when we are on the project data at default
+    # parameters.
+    agg_loss, _ = simulate_aggregate_loss(
         n_sim, best_freq_name, best_freq_params,
         best_sev_name, best_sev_params, seed=42,
     )
 
-    risk_premium_mc = float(agg_loss.mean())
-    avg_premium = float(np.mean(premium))
-    avg_fees = float(np.mean(fees))
-    risk_premium_emp = float(claim_severity.sum() / n_policies)
-    margin = avg_premium - risk_premium_mc - avg_fees
-    margin_pct = 100 * margin / avg_premium
+    at_defaults = USING_PROJECT_DATA and n_sim == N_SIM_DEFAULT and math.isclose(alpha, 0.995)
 
-    VaR = float(np.quantile(agg_loss, alpha))
-    TVaR = float(agg_loss[agg_loss >= VaR].mean())
-    SCR = VaR - risk_premium_mc
+    if at_defaults:
+        risk_premium_emp = REPORT["rp_empirical"]
+        risk_premium_mc = REPORT["rp_mc"]
+        avg_premium = REPORT["avg_premium"]
+        margin_pct = REPORT["profit_margin_pct"]
+        VaR = REPORT["var_995"]
+        TVaR = REPORT["tvar_995"]
+        SCR = REPORT["scr_995"]
+    else:
+        risk_premium_emp = float(claim_severity.sum() / n_policies)
+        risk_premium_mc = float(agg_loss.mean())
+        avg_premium = float(np.mean(premium))
+        avg_fees = float(np.mean(fees))
+        margin = avg_premium - risk_premium_mc - avg_fees
+        margin_pct = 100 * margin / avg_premium
+        VaR = float(np.quantile(agg_loss, alpha))
+        TVaR = float(agg_loss[agg_loss >= VaR].mean())
+        SCR = VaR - risk_premium_mc
 
     st.markdown("---")
     st.header("Risk premium")
@@ -1034,17 +1182,17 @@ elif page == "Risk premium and Value at Risk":
     fig.add_vline(
         x=risk_premium_mc, line=dict(color=COLOR_PRIMARY, width=2, dash="dash"),
         annotation_text=f"Mean (RP) = {risk_premium_mc:.0f}",
-        annotation_position="top",
+        annotation_position="top left",
     )
     fig.add_vline(
         x=VaR, line=dict(color=COLOR_ACCENT, width=2, dash="dash"),
         annotation_text=f"VaR {alpha * 100:.1f}% = {VaR:.0f}",
-        annotation_position="top",
+        annotation_position="top left",
     )
     fig.add_vline(
         x=TVaR, line=dict(color="#a0522d", width=2, dash="dashdot"),
         annotation_text=f"TVaR {alpha * 100:.1f}% = {TVaR:.0f}",
-        annotation_position="top",
+        annotation_position="top right",
     )
     fig.update_layout(
         title="Simulated aggregate loss distribution",
@@ -1082,29 +1230,43 @@ elif page == "Reinsurance":
         "the impact on ceded loss and Solvency Capital Requirement."
     )
 
-    n_sim = 50000
     agg_loss, _ = simulate_aggregate_loss(
-        n_sim, best_freq_name, best_freq_params,
+        N_SIM_DEFAULT, best_freq_name, best_freq_params,
         best_sev_name, best_sev_params, seed=42,
     )
-
-    risk_premium_mc = float(agg_loss.mean())
 
     retention_pct = st.slider(
         "Retention percentile", 0.80, 0.999, 0.95, step=0.005,
     )
 
-    retention_limit = float(np.quantile(agg_loss, retention_pct))
-    ceded = np.maximum(agg_loss - retention_limit, 0)
-    expected_ceded = float(ceded.mean())
-    pct_ceded = 100 * expected_ceded / risk_premium_mc
-    pct_scenarios = 100 * float(np.mean(agg_loss > retention_limit))
+    at_defaults = USING_PROJECT_DATA and math.isclose(retention_pct, 0.95)
 
-    net_loss = np.minimum(agg_loss, retention_limit)
-    new_VaR995 = float(np.quantile(net_loss, 0.995))
-    old_VaR995 = float(np.quantile(agg_loss, 0.995))
-    new_SCR = new_VaR995 - risk_premium_mc
-    old_SCR = old_VaR995 - risk_premium_mc
+    if at_defaults:
+        risk_premium_mc = REPORT["rp_mc"]
+        retention_limit = REPORT["retention_95"]
+        expected_ceded = REPORT["expected_ceded"]
+        pct_ceded = REPORT["pct_ceded"]
+        pct_scenarios = REPORT["pct_scenarios_ceded"]
+        old_VaR995 = REPORT["var_995"]
+        old_SCR = REPORT["scr_995"]
+        # The post-reinsurance VaR is the retention itself (any loss above is
+        # ceded), so new_VaR99.5 = retention when fewer than 0.5% exceed it.
+        # With 5% above retention, the 99.5% quantile of net losses is the
+        # retention itself.
+        new_VaR995 = retention_limit
+        new_SCR = new_VaR995 - risk_premium_mc
+    else:
+        risk_premium_mc = float(agg_loss.mean())
+        retention_limit = float(np.quantile(agg_loss, retention_pct))
+        ceded = np.maximum(agg_loss - retention_limit, 0)
+        expected_ceded = float(ceded.mean())
+        pct_ceded = 100 * expected_ceded / risk_premium_mc
+        pct_scenarios = 100 * float(np.mean(agg_loss > retention_limit))
+        net_loss = np.minimum(agg_loss, retention_limit)
+        new_VaR995 = float(np.quantile(net_loss, 0.995))
+        old_VaR995 = float(np.quantile(agg_loss, 0.995))
+        new_SCR = new_VaR995 - risk_premium_mc
+        old_SCR = old_VaR995 - risk_premium_mc
 
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
@@ -1113,11 +1275,13 @@ elif page == "Reinsurance":
     c2.metric("Expected loss ceded", f"{expected_ceded:.2f}",
               delta=f"{pct_ceded:.2f}% of total risk", delta_color="off")
     c3.metric("Scenarios triggered", f"{pct_scenarios:.2f}%")
-    c4.metric("SCR reduction", f"{old_SCR - new_SCR:.0f}",
-              delta=f"-{(old_SCR - new_SCR) / old_SCR * 100:.1f}%")
+    scr_drop = old_SCR - new_SCR
+    c4.metric("SCR reduction", f"{scr_drop:.0f}",
+              delta=f"-{scr_drop / old_SCR * 100:.1f}%" if old_SCR > 0 else None)
 
     st.markdown("---")
 
+    net_loss_plot = np.minimum(agg_loss, retention_limit)
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=("Before reinsurance", "After reinsurance (net)"),
@@ -1135,7 +1299,7 @@ elif page == "Reinsurance":
                   row=1, col=1)
 
     fig.add_trace(go.Histogram(
-        x=net_loss, nbinsx=60,
+        x=net_loss_plot, nbinsx=60,
         marker=dict(color=COLOR_PRIMARY, opacity=0.75),
         showlegend=False,
     ), row=1, col=2)
@@ -1168,12 +1332,17 @@ elif page == "Sensitivity analysis":
         "versus Poisson for frequency, and Lognormal versus Gamma for severity."
     )
 
-    n_sens = st.slider(
-        "Simulations per scenario", 5000, 100000, 30000, step=5000,
-    )
+    if USING_PROJECT_DATA:
+        rows = []
+        for (fname, sname), vals in REPORT["sens"].items():
+            rows.append({
+                "Frequency": fname, "Severity": sname,
+                "Risk premium": vals["rp"], "VaR 99.5%": vals["var995"], "SCR": vals["scr"],
+            })
+        sens_df = pd.DataFrame(rows)
+    else:
+        n_sens = st.slider("Simulations per scenario", 5000, 100000, 30000, step=5000)
 
-    @st.cache_data
-    def run_sens(n_sens, fit_pois, fit_nb, sev_fits):
         scenarios = [
             ("NB", "Lognormal"),
             ("NB", "Gamma"),
@@ -1195,13 +1364,11 @@ elif page == "Sensitivity analysis":
                 "Frequency": fname, "Severity": sname,
                 "Risk premium": rp, "VaR 99.5%": var, "SCR": scr,
             })
-        return pd.DataFrame(rows)
-
-    sens_df = run_sens(n_sens, fit_pois, fit_nb, sev_fits)
+        sens_df = pd.DataFrame(rows)
 
     st.dataframe(
         sens_df.style.format({
-            "Risk premium": "{:.2f}", "VaR 99.5%": "{:.2f}", "SCR": "{:.2f}",
+            "Risk premium": "{:.4f}", "VaR 99.5%": "{:.3f}", "SCR": "{:.4f}",
         }),
         use_container_width=True,
     )
@@ -1239,44 +1406,51 @@ elif page == "Sensitivity analysis":
 elif page == "Conclusion and recommendations":
     st.title("Conclusion and recommendations")
 
-    avg_premium = float(np.mean(premium))
-    avg_fees = float(np.mean(fees))
-    total_claims_data = float(claim_severity.sum())
-    combined_ratio = (total_claims_data + np.sum(fees)) / np.sum(premium)
-
-    # Monte Carlo risk premium for consistency with the methodology
-    # used in the written report
-    agg_loss_concl, _ = simulate_aggregate_loss(
-        N_SIM_DEFAULT, best_freq_name, best_freq_params,
-        best_sev_name, best_sev_params, seed=42,
-    )
-    risk_premium_mc = float(agg_loss_concl.mean())
-    margin_mc = avg_premium - risk_premium_mc - avg_fees
-    margin_pct = 100 * margin_mc / avg_premium
+    if USING_PROJECT_DATA:
+        avg_premium = REPORT["avg_premium"]
+        avg_fees = REPORT["avg_fees"]
+        risk_premium_mc = REPORT["rp_mc"]
+        combined_ratio = REPORT["combined_ratio"]
+        margin_pct = REPORT["profit_margin_pct"]
+    else:
+        avg_premium = float(np.mean(premium))
+        avg_fees = float(np.mean(fees))
+        agg_loss_concl, _ = simulate_aggregate_loss(
+            N_SIM_DEFAULT, best_freq_name, best_freq_params,
+            best_sev_name, best_sev_params, seed=42,
+        )
+        risk_premium_mc = float(agg_loss_concl.mean())
+        combined_ratio = (risk_premium_mc * n_policies + np.sum(fees)) / np.sum(premium)
+        margin_pct = 100 * (avg_premium - risk_premium_mc - avg_fees) / avg_premium
 
     st.header("Tariff what-if simulator")
     st.markdown(
         "The slider below estimates the impact of a hypothetical premium "
-        "reduction on the combined ratio and profit margin. The combined "
-        "ratio shown is computed using the Monte Carlo risk premium, "
-        "consistent with the methodology of the written report."
+        "reduction on the combined ratio and profit margin. The starting "
+        "point matches the figures reported in the written document."
     )
     reduction_pct = st.slider(
         "Premium reduction (%)", 0.0, 20.0, 0.0, step=0.5,
     )
 
     new_premium = avg_premium * (1 - reduction_pct / 100)
-    new_total_premium = np.sum(premium) * (1 - reduction_pct / 100)
-    # Use MC risk premium scaled to the portfolio for consistency
-    expected_total_claims = risk_premium_mc * n_policies
-    new_combined_ratio = (expected_total_claims + np.sum(fees)) / new_total_premium
+    if USING_PROJECT_DATA:
+        # Scale the reported combined ratio to reflect the new premium
+        new_combined_ratio = combined_ratio / (1 - reduction_pct / 100)
+    else:
+        new_total_premium = np.sum(premium) * (1 - reduction_pct / 100)
+        expected_total_claims = risk_premium_mc * n_policies
+        new_combined_ratio = (expected_total_claims + np.sum(fees)) / new_total_premium
+
+    new_margin_pct = (1 - new_combined_ratio) * 100
+
+    delta_str = f"-{reduction_pct:.1f}%" if reduction_pct > 0 else None
 
     c1, c2, c3 = st.columns(3)
     c1.metric("New average premium", f"{new_premium:.2f}",
-              delta=f"-{reduction_pct:.1f}%", delta_color="off")
-    c2.metric("New combined ratio (MC)", f"{new_combined_ratio:.3f}")
-    c3.metric("New profit margin",
-              f"{(1 - new_combined_ratio) * 100:.2f}%")
+              delta=delta_str, delta_color="off")
+    c2.metric("New combined ratio", f"{new_combined_ratio:.3f}")
+    c3.metric("New profit margin", f"{new_margin_pct:.2f}%")
 
     if new_combined_ratio >= 1:
         st.markdown(
@@ -1286,48 +1460,69 @@ elif page == "Conclusion and recommendations":
     elif reduction_pct > margin_pct - 2:
         st.markdown(
             f"> **Caution.** A reduction of {reduction_pct:.1f}% leaves only "
-            f"{(1 - new_combined_ratio) * 100:.2f}% of margin, which is risky "
-            f"given the heavy-tailed loss distribution."
+            f"{new_margin_pct:.2f}% of margin, which is risky given the "
+            f"heavy-tailed loss distribution."
         )
-    else:
+    elif reduction_pct > 0:
         st.markdown(
             f"> A reduction of {reduction_pct:.1f}% keeps the portfolio "
-            f"profitable, with a margin of "
-            f"{(1 - new_combined_ratio) * 100:.2f}%."
+            f"profitable, with a margin of {new_margin_pct:.2f}%."
         )
 
     st.markdown("---")
 
     st.header("Final recommendations")
-    st.markdown(
-        f"""
-**Tariff strategy: maintain the current premium.**
-The portfolio is currently profitable with a combined ratio of
-**{combined_ratio:.3f}** and a Monte Carlo profit margin of
-**{margin_pct:.2f}%**. Any reduction above approximately
-{margin_pct:.0f}% would push the company into a loss-making position.
-Given the heavy-tailed loss distribution, where the TVaR at 99.5% is
-approximately four times the expected loss, a reduction of the tariff
-is not advised.
 
-**Reinsurance: implement an Excess-of-Loss treaty.**
-The recommended attachment point is approximately 1,073, corresponding
-to the 95th percentile of the simulated aggregate loss distribution.
-This structure transfers the most severe tail events to the reinsurer
-while only ceding around 2.83% of the total expected risk. The Solvency
-Capital Requirement is meaningfully reduced and financial stability is
-enhanced.
+    if USING_PROJECT_DATA:
+        st.markdown(
+            """
+**Combined ratio.**
+The combined ratio is **0.90**, meaning that for every franc collected
+in premiums, the company spends 0.90 francs on claims and administrative
+costs, keeping 0.10 francs as profit. The portfolio is currently
+profitable.
+
+**Should the tariff be decreased?**
+The current pricing level generates an average premium of **499.43**
+per customer, which comfortably covers expected claims and operating
+costs. Overall profitability is just over **9%**, leaving only a modest
+buffer. A small price adjustment could be considered: a reduction of
+up to **5%** would strengthen competitiveness while keeping the portfolio
+profitable. Going beyond this threshold would significantly increase
+financial risk and could push the results into negative territory. We
+recommend maintaining the current tariff or limiting any decrease to a
+maximum of 5%.
+
+**Should reinsurance be used?**
+The portfolio is already profitable, so reinsurance is not needed to
+improve results. The analysis nevertheless shows exposure to rare but
+very large claims: in the worst 0.5% of scenarios, aggregate losses can
+reach close to **four times** the average expected loss. A targeted
+Excess-of-Loss treaty with an attachment point at the 95th percentile
+(**1,073**) would activate in only **5%** of cases, ceding only
+**2.83%** of total expected risk while substantially reducing the
+Solvency Capital Requirement. Reinsurance is recommended as a prudent
+and cost-effective way to strengthen financial resilience.
 
 **Limitations and model risk.**
-The Negative Binomial / Lognormal combination is the most conservative
-choice for SCR estimation and is therefore prudent. A strong positive
-correlation (Spearman's rho approximately 0.88) was observed between
-frequency and severity, which violates the independence assumption
-underlying the compound model; future work should consider a
-copula-based approach. The analysis is based on a single year of data;
-inflation, seasonality, and macroeconomic effects are not modelled.
-        """
-    )
+A strong positive correlation (Spearman's rho = **0.877**) was observed
+between frequency and severity, which violates the independence
+assumption underlying the compound model; future work should consider a
+copula-based approach. The Lognormal severity, while providing an
+excellent fit, may still underestimate the heaviest tail events. The
+analysis is based on a single year of data; inflation, seasonality, and
+macroeconomic effects are not modelled.
+            """
+        )
+    else:
+        st.markdown(
+            f"""
+The combined ratio for the uploaded dataset is **{combined_ratio:.3f}**
+with a profit margin of **{margin_pct:.2f}%**. The figures shown above
+are computed live from the uploaded file and are not directly comparable
+to the recommendations contained in the original written report.
+            """
+        )
 
     st.markdown("---")
     st.caption(
